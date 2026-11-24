@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Namaz vakitleri</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=EB+Garamond:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* VOICE: sakin, sade, kare kutu
+   IDEA: almanak sayfasındaki vakit cetveli
+   PICTURE: altı vakit tek satırda, sıradaki vakit bordo
+   COLOUR and TYPE: krem, bordo; Cormorant + EB Garamond
+   LAYOUT: üstte sıradaki vakit, altında cetvel; dar ekranda 3x2 */
+:root{color-scheme:light;--bg:#F5EFE6;--ink:#4A1C24;--accent:#7B2D3A;--soft:#8a6a6e;--rule:#e2d6c8;--tint:#efe5d8}
+:root[data-theme=dark]{color-scheme:dark;--bg:#1d1416;--ink:#f1e5da;--accent:#d9a2ab;--soft:#b39a9c;--rule:#3a2a2d;--tint:#2a1e21}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 "EB Garamond",Georgia,serif;overflow-x:clip}
+.wrap{max-width:300px;margin:0 auto;padding:12px 14px;text-align:center}
+.lbl{font-size:13px;color:var(--soft);margin:0}
+.next{margin:8px 0 2px;font-size:16px}
+.next b{display:block;font:600 26px/1.1 "Cormorant Garamond",Georgia,serif;color:var(--accent)}
+.row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:12px;border-top:1px solid var(--rule)}
+.v{padding:10px 2px;border-bottom:1px solid var(--rule)}
+.v:not(:nth-child(3n)){border-right:1px solid var(--rule)}
+.v span{display:block;font-size:13px;color:var(--soft)}
+.v time{display:block;font-size:18px;white-space:nowrap}
+.v.on{background:var(--tint)}
+.v.on span,.v.on time{color:var(--accent);font-weight:500}
+.v.past time{color:var(--soft)}
+.err{font-size:14px;color:var(--soft)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="lbl">Namaz vakitleri · İstanbul</p><p class="lbl" id="hicri"></p>
+  <p class="next" id="next">Vakitler yükleniyor</p>
+  <div class="row" id="row"></div>
+</div>
+<script>
+{
+const TZ = 'Europe/Istanbul';
+const NAMES = [['Imsak', 'İmsak'], ['Gunes', 'Güneş'], ['Ogle', 'Öğle'], ['Ikindi', 'İkindi'], ['Aksam', 'Akşam'], ['Yatsi', 'Yatsı']];
+const ALADHAN = { Imsak: 'Fajr', Gunes: 'Sunrise', Ogle: 'Dhuhr', Ikindi: 'Asr', Aksam: 'Maghrib', Yatsi: 'Isha' };
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const pad = n => String(n).padStart(2, '0');
+const trDate = d => new Intl.DateTimeFormat('tr-TR', { timeZone: TZ, day: '2-digit', month: '2-digit', year: 'numeric' }).format(d);
+const nowMin = () => { const p = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()).split(':'); return +p[0] * 60 + +p[1]; };
+const toMin = t => { const [h, m] = String(t).slice(0, 5).split(':'); return +h * 60 + +m; };
+const ok = t => /^\d{2}:\d{2}/.test(String(t));
+
+let days = null; // { 'GG.AA.YYYY': {Imsak:..., ..., hicri} }
+
+async function load() {
+  try {
+    const r = await fetch('https://ezanvakti.emushaf.net/vakitler/9541');
+    if (!r.ok) throw new Error(r.status);
+    const list = await r.json();
+    const m = {};
+    list.forEach(x => { m[x.MiladiTarihKisa] = { Imsak: x.Imsak, Gunes: x.Gunes, Ogle: x.Ogle, Ikindi: x.Ikindi, Aksam: x.Aksam, Yatsi: x.Yatsi, hicri: x.HicriTarihUzun }; });
+    if (!m[trDate(new Date())]) throw new Error('bugün yok');
+    days = m;
+  } catch (e) {
+    try { days = await loadAladhan(); } catch (e2) { days = null; }
+  }
+  render();
+}
+
+async function loadAladhan() {
+  const m = {};
+  for (const off of [0, 1]) {
+    const d = new Date(Date.now() + off * 86400000);
+    const [dd, mm, yy] = trDate(d).split('.');
+    const r = await fetch(`https://api.aladhan.com/v1/timingsByCity/${dd}-${mm}-${yy}?city=Istanbul&country=Turkey&method=13`);
+    if (!r.ok) throw new Error(r.status);
+    const j = (await r.json()).data;
+    const o = {};
+    for (const k in ALADHAN) o[k] = String(j.timings[ALADHAN[k]]).slice(0, 5);
+    o.hicri = '';
+    m[`${dd}.${mm}.${yy}`] = o;
+  }
+  return m;
+}
+
+function render() {
+  const nextEl = document.getElementById('next'), row = document.getElementById('row');
+  const today = days && days[trDate(new Date())];
+  if (!today || !NAMES.every(([k]) => ok(today[k]))) {
+    nextEl.innerHTML = '<span class="err">Vakitler şu an alınamadı, birazdan yeniden denenecek.</span>';
+    row.innerHTML = '';
+    return;
+  }
+  document.getElementById('hicri').textContent = today.hicri || '';
+  const n = nowMin();
+  let idx = NAMES.findIndex(([k]) => toMin(today[k]) > n);
+  let target, label;
+  if (idx === -1) {
+    const tom = days[trDate(new Date(Date.now() + 86400000))];
+    label = 'İmsak';
+    target = tom && ok(tom.Imsak) ? toMin(tom.Imsak) + 1440 : null;
+  } else { label = NAMES[idx][1]; target = toMin(today[NAMES[idx][0]]); }
+  if (target != null) {
+    const left = target - n, h = Math.floor(left / 60), m = left % 60;
+    nextEl.innerHTML = `<b>${esc(label)} vaktine</b>${h ? h + ' saat ' : ''}${m} dakika`;
+  } else nextEl.textContent = '';
+  row.innerHTML = NAMES.map(([k, ad], i) => `<div class="v${i === idx ? ' on' : ''}${idx !== -1 && i < idx ? ' past' : ''}${idx === -1 ? ' past' : ''}"><span>${ad}</span><time>${esc(String(today[k]).slice(0, 5))}</time></div>`).join('');
+}
+
+load();
+setInterval(render, 30000);
+setInterval(load, 6 * 3600000);
+}
+</script>
+</body>
+</html>
