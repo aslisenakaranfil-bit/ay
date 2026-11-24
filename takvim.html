@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hava ve takvim</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=EB+Garamond:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* VOICE: sakin, defter köşesi gibi
+   IDEA: almanak sayfasının üst şeridi: solda günün havası, sağda ayın sayfası
+   PICTURE: sade hava simgesi ve ay evreleri işaretli küçük ay takvimi
+   COLOUR and TYPE: krem, bordo; Cormorant + EB Garamond
+   LAYOUT: iki panel yan yana, dar ekranda alt alta */
+:root{color-scheme:light;--bg:#F5EFE6;--ink:#4A1C24;--accent:#7B2D3A;--soft:#8a6a6e;--rule:#e2d6c8;--tint:#efe5d8}
+:root[data-theme=dark]{color-scheme:dark;--bg:#1d1416;--ink:#f1e5da;--accent:#d9a2ab;--soft:#b39a9c;--rule:#3a2a2d;--tint:#2a1e21}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 "EB Garamond",Georgia,serif;overflow-x:clip}
+.strip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:0;max-width:760px;margin:0 auto;padding:10px 12px}
+.panel{padding:8px 14px}
+.panel+.panel{border-left:1px solid var(--rule)}
+.lbl{font-size:13px;color:var(--soft);margin:0}
+/* hava */
+.now{display:flex;align-items:center;gap:12px;margin:6px 0 4px}
+.now svg{width:46px;height:46px;flex:none;color:var(--accent)}
+.temp{font:600 40px/1 "Cormorant Garamond",Georgia,serif;color:var(--accent)}
+.desc{font-size:16px;margin:0}
+.meta{font-size:13px;color:var(--soft);margin:2px 0 0}
+.days{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px;border-top:1px solid var(--rule)}
+.day{text-align:center;padding:7px 2px 0}
+.day b{display:block;font-weight:500;font-size:13px}
+.day svg{width:28px;height:28px;color:var(--accent);display:block;margin:2px auto}
+.day span{font-size:13px;white-space:nowrap}
+.day i{display:block;font-style:normal;font-size:13px;color:var(--soft)}
+.err{font-size:14px;color:var(--soft);margin-top:14px}
+/* takvim */
+.calhead{display:flex;align-items:center;justify-content:space-between}
+.calhead h2{font:600 22px/1.1 "Cormorant Garamond",Georgia,serif;color:var(--accent);margin:0}
+.nav{display:flex;gap:2px}
+.nav button{all:unset;cursor:pointer;width:30px;height:30px;display:grid;place-items:center;border-radius:50%;color:var(--accent);font-size:18px}
+.nav button:hover{background:var(--tint)}
+.nav button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));margin-top:4px;text-align:center}
+.wd{font-size:13px;color:var(--soft);padding:2px 0 3px}
+.c{position:relative;height:27px;display:grid;place-items:center;font-size:14px}
+.c.out{color:var(--soft);opacity:.45}
+.c.we{color:var(--soft)}
+.c.today span{background:var(--accent);color:var(--bg);border-radius:50%;width:25px;height:25px;display:grid;place-items:center}
+.c svg{position:absolute;top:1px;right:calc(50% - 17px);width:9px;height:9px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:13px;color:var(--soft);margin:6px 0 0}
+.legend span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.legend svg{width:10px;height:10px}
+@media(max-width:520px){.strip{grid-template-columns:minmax(0,1fr)}.panel+.panel{border-left:0;border-top:1px solid var(--rule);margin-top:6px;padding-top:12px}}
+</style>
+</head>
+<body>
+<div class="strip">
+  <section class="panel" aria-label="Hava durumu">
+    <p class="lbl" id="place">Başakşehir, İstanbul</p>
+    <div id="wx"><p class="err">Hava durumu yükleniyor</p></div>
+  </section>
+  <section class="panel" aria-label="Ay takvimi">
+    <div class="calhead">
+      <h2 id="mtitle"></h2>
+      <div class="nav"><button id="prev" aria-label="Önceki ay">‹</button><button id="next" aria-label="Sonraki ay">›</button></div>
+    </div>
+    <div class="grid" id="cal"></div>
+    <p class="legend" id="legend"></p>
+  </section>
+</div>
+<script>
+{
+// Ay hesapları: Meeus, Astronomical Algorithms (bölüm 25, 47, 48, 49)
+const RAD = Math.PI / 180;
+const sin = d => Math.sin(d * RAD), cos = d => Math.cos(d * RAD);
+const norm = d => ((d % 360) + 360) % 360;
+const jdFromDate = dt => dt.getTime() / 86400000 + 2440587.5;
+const dateFromJd = jd => new Date((jd - 2440587.5) * 86400000);
+const DELTA_T = 70 / 86400; // TT - UT, gün
+
+function sunPos(T) {
+  const L0 = 280.46646 + 36000.76983 * T + 0.0003032 * T * T;
+  const M = 357.52911 + 35999.05029 * T - 0.0001537 * T * T;
+  const e = 0.016708634 - 0.000042037 * T;
+  const C = (1.914602 - 0.004817 * T - 0.000014 * T * T) * sin(M) + (0.019993 - 0.000101 * T) * sin(2 * M) + 0.000289 * sin(3 * M);
+  const nu = M + C;
+  const R = 1.000001018 * (1 - e * e) / (1 + e * cos(nu));
+  const om = 125.04 - 1934.136 * T;
+  return { lon: norm(L0 + C - 0.00569 - 0.00478 * sin(om)), R };
+}
+
+const LR = [ // D, M, M', F, Σl, Σr
+  [0,0,1,0,6288774,-20905355],[2,0,-1,0,1274027,-3699111],[2,0,0,0,658314,-2955968],[0,0,2,0,213618,-569925],
+  [0,1,0,0,-185116,48888],[0,0,0,2,-114332,-3149],[2,0,-2,0,58793,246158],[2,-1,-1,0,57066,-152138],
+  [2,0,1,0,53322,-170733],[2,-1,0,0,45758,-204586],[0,1,-1,0,-40923,-129620],[1,0,0,0,-34720,108743],
+  [0,1,1,0,-30383,104755],[2,0,0,-2,15327,10321],[0,0,1,2,-12528,0],[0,0,1,-2,10980,79661],
+  [4,0,-1,0,10675,-34782],[0,0,3,0,10034,-23210],[4,0,-2,0,8548,-21636],[2,1,-1,0,-7888,24208],
+  [2,1,0,0,-6766,30824],[1,0,-1,0,-5163,-8379],[1,1,0,0,4987,-16675],[2,-1,1,0,4036,-12831],
+  [2,0,2,0,3994,-10445],[4,0,0,0,3861,-11650],[2,0,-3,0,3665,14403],[0,1,-2,0,-2689,-7003],
+  [2,0,-1,2,-2602,0],[2,-1,-2,0,2390,10056],[1,0,1,0,-2348,6322],[2,-2,0,0,2236,-9884],
+  [0,1,2,0,-2120,5751],[0,2,0,0,-2069,0]
+];
+const B = [ // D, M, M', F, Σb
+  [0,0,0,1,5128122],[0,0,1,1,280602],[0,0,1,-1,277693],[2,0,0,-1,173237],[2,0,-1,1,55413],
+  [2,0,-1,-1,46271],[2,0,0,1,32573],[0,0,2,1,17198],[2,0,1,-1,9266],[0,0,2,-1,8822],
+  [2,-1,0,-1,8216],[2,0,-2,-1,4324],[2,0,1,1,4200],[2,1,0,-1,-3359],[2,-1,-1,1,2463],
+  [2,-1,0,1,2211],[2,-1,-1,-1,2065],[0,1,-1,-1,-1870],[4,0,-1,-1,1828],[0,1,0,1,-1794],[0,0,0,3,-1749]
+];
+
+function moonPos(T) {
+  const T2 = T * T, T3 = T2 * T, T4 = T3 * T;
+  const Lp = 218.3164477 + 481267.88123421 * T - 0.0015786 * T2 + T3 / 538841 - T4 / 65194000;
+  const D = 297.8501921 + 445267.1114034 * T - 0.0018819 * T2 + T3 / 545868 - T4 / 113065000;
+  const M = 357.5291092 + 35999.0502909 * T - 0.0001536 * T2 + T3 / 24490000;
+  const Mp = 134.9633964 + 477198.8675055 * T + 0.0087414 * T2 + T3 / 69699 - T4 / 14712000;
+  const F = 93.2720950 + 483202.0175233 * T - 0.0036539 * T2 - T3 / 3526000 + T4 / 863310000;
+  const A1 = 119.75 + 131.849 * T, A2 = 53.09 + 479264.290 * T, A3 = 313.45 + 481266.484 * T;
+  const E = 1 - 0.002516 * T - 0.0000074 * T2;
+  let sl = 0, sr = 0, sb = 0;
+  for (const [d, m, mp, f, l, r] of LR) {
+    const arg = d * D + m * M + mp * Mp + f * F;
+    const ef = Math.abs(m) === 1 ? E : Math.abs(m) === 2 ? E * E : 1;
+    sl += l * ef * sin(arg); sr += r * ef * cos(arg);
+  }
+  for (const [d, m, mp, f, b] of B) {
+    const ef = Math.abs(m) === 1 ? E : Math.abs(m) === 2 ? E * E : 1;
+    sb += b * ef * sin(d * D + m * M + mp * Mp + f * F);
+  }
+  sl += 3958 * sin(A1) + 1962 * sin(Lp - F) + 318 * sin(A2);
+  sb += -2235 * sin(Lp) + 382 * sin(A3) + 175 * sin(A1 - F) + 175 * sin(A1 + F) + 127 * sin(Lp - Mp) - 115 * sin(Lp + Mp);
+  return { lon: norm(Lp + sl / 1e6), lat: sb / 1e6, dist: 385000.56 + sr / 1000 };
+}
+
+function illumination(dt) {
+  const T = (jdFromDate(dt) + DELTA_T - 2451545) / 36525;
+  const s = sunPos(T), m = moonPos(T);
+  const cpsi = cos(m.lat) * cos(m.lon - s.lon);
+  const psi = Math.acos(cpsi) / RAD;
+  const Rkm = s.R * 149597870.7;
+  const i = Math.atan2(Rkm * sin(psi), m.dist - Rkm * cpsi);
+  return { k: (1 + Math.cos(i)) / 2, waxing: sin(m.lon - s.lon) > 0, elong: norm(m.lon - s.lon) };
+}
+
+function moonAltitude(dt, lat, lon) {
+  const jd = jdFromDate(dt);
+  const T = (jd + DELTA_T - 2451545) / 36525;
+  const m = moonPos(T);
+  const eps = 23.4392911 - 0.0130042 * T;
+  const ra = Math.atan2(sin(m.lon) * cos(eps) - Math.tan(m.lat * RAD) * sin(eps), cos(m.lon)) / RAD;
+  const dec = Math.asin(sin(m.lat) * cos(eps) + cos(m.lat) * sin(eps) * sin(m.lon)) / RAD;
+  const Tu = (jd - 2451545) / 36525;
+  const gmst = 280.46061837 + 360.98564736629 * (jd - 2451545) + 0.000387933 * Tu * Tu;
+  const H = gmst + lon - ra;
+  const h = Math.asin(sin(lat) * sin(dec) + cos(lat) * cos(dec) * cos(H)) / RAD;
+  const par = Math.asin(6378.14 / m.dist) / RAD;
+  return h - (0.7275 * par - 0.5667);
+}
+
+// Gün içinde ayın doğuş ve batışı (start: yerel gece yarısının Date karşılığı)
+function riseSet(start, lat, lon) {
+  const step = 10 * 60000, out = { rise: null, set: null };
+  let t0 = start.getTime(), a0 = moonAltitude(start, lat, lon);
+  for (let t = t0 + step; t <= start.getTime() + 86400000; t += step) {
+    const a1 = moonAltitude(new Date(t), lat, lon);
+    if ((a0 < 0) !== (a1 < 0)) {
+      let lo = t - step, hi = t, alo = a0;
+      for (let j = 0; j < 20; j++) {
+        const mid = (lo + hi) / 2, am = moonAltitude(new Date(mid), lat, lon);
+        if ((am < 0) === (alo < 0)) { lo = mid; alo = am; } else hi = mid;
+      }
+      const when = new Date((lo + hi) / 2);
+      if (a0 < 0 && !out.rise) out.rise = when;
+      if (a0 >= 0 && !out.set) out.set = when;
+    }
+    a0 = a1;
+  }
+  return out;
+}
+
+// Ana evre anları (q: 0 yeni ay, 0.25 ilk dördün, 0.5 dolunay, 0.75 son dördün)
+function phaseTime(kInt, q) {
+  const k = kInt + q, T = k / 1236.85, T2 = T * T, T3 = T2 * T, T4 = T3 * T;
+  let jde = 2451550.09766 + 29.530588861 * k + 0.00015437 * T2 - 0.000000150 * T3 + 0.00000000073 * T4;
+  const E = 1 - 0.002516 * T - 0.0000074 * T2;
+  const M = 2.5534 + 29.10535670 * k - 0.0000014 * T2 - 0.00000011 * T3;
+  const Mp = 201.5643 + 385.81693528 * k + 0.0107582 * T2 + 0.00001238 * T3 - 0.000000058 * T4;
+  const F = 160.7108 + 390.67050284 * k - 0.0016118 * T2 - 0.00000227 * T3 + 0.000000011 * T4;
+  const Om = 124.7746 - 1.56375588 * k + 0.0020672 * T2 + 0.00000215 * T3;
+  let c;
+  if (q === 0 || q === 0.5) {
+    const n = q === 0;
+    c = (n ? -0.40720 : -0.40614) * sin(Mp) + (n ? 0.17241 : 0.17302) * E * sin(M) + (n ? 0.01608 : 0.01614) * sin(2 * Mp)
+      + (n ? 0.01039 : 0.01043) * sin(2 * F) + (n ? 0.00739 : 0.00734) * E * sin(Mp - M) - (n ? 0.00514 : 0.00515) * E * sin(Mp + M)
+      + (n ? 0.00208 : 0.00209) * E * E * sin(2 * M) - 0.00111 * sin(Mp - 2 * F) - 0.00057 * sin(Mp + 2 * F)
+      + 0.00056 * E * sin(2 * Mp + M) - 0.00042 * sin(3 * Mp) + 0.00042 * E * sin(M + 2 * F) + 0.00038 * E * sin(M - 2 * F)
+      - 0.00024 * E * sin(2 * Mp - M) - 0.00017 * sin(Om) - 0.00007 * sin(Mp + 2 * M) + 0.00004 * sin(2 * Mp - 2 * F)
+      + 0.00004 * sin(3 * M) + 0.00003 * sin(Mp + M - 2 * F) + 0.00003 * sin(2 * Mp + 2 * F) - 0.00003 * sin(Mp + M + 2 * F)
+      + 0.00003 * sin(Mp - M + 2 * F) - 0.00002 * sin(Mp - M - 2 * F) - 0.00002 * sin(3 * Mp + M) + 0.00002 * sin(4 * Mp);
+  } else {
+    c = -0.62801 * sin(Mp) + 0.17172 * E * sin(M) - 0.01183 * E * sin(Mp + M) + 0.00862 * sin(2 * Mp) + 0.00804 * sin(2 * F)
+      + 0.00454 * E * sin(Mp - M) + 0.00204 * E * E * sin(2 * M) - 0.00180 * sin(Mp - 2 * F) - 0.00070 * sin(Mp + 2 * F)
+      - 0.00040 * sin(3 * Mp) - 0.00034 * E * sin(2 * Mp - M) + 0.00032 * E * sin(M + 2 * F) + 0.00032 * E * sin(M - 2 * F)
+      - 0.00028 * E * E * sin(Mp + 2 * M) + 0.00027 * E * sin(2 * Mp + M) - 0.00017 * sin(Om) - 0.00005 * sin(Mp - M - 2 * F)
+      + 0.00004 * sin(2 * Mp + 2 * F) - 0.00004 * sin(Mp + M + 2 * F) + 0.00004 * sin(Mp - 2 * M) + 0.00003 * sin(Mp + M - 2 * F)
+      + 0.00003 * sin(3 * M) + 0.00002 * sin(2 * Mp - 2 * F) + 0.00002 * sin(Mp - M + 2 * F) - 0.00002 * sin(3 * Mp + M);
+    const W = 0.00306 - 0.00038 * E * cos(M) + 0.00026 * cos(Mp) - 0.00002 * cos(Mp - M) + 0.00002 * cos(Mp + M) + 0.00002 * cos(2 * F);
+    c += q === 0.25 ? W : -W;
+  }
+  const A = [[299.77, 0.107408, 0.000325], [251.88, 0.016321, 0.000165], [251.83, 26.651886, 0.000164], [349.42, 36.412478, 0.000126],
+    [84.66, 18.206239, 0.000110], [141.74, 53.303771, 0.000062], [207.14, 2.453732, 0.000060], [154.84, 7.306860, 0.000056],
+    [34.52, 27.261239, 0.000047], [207.19, 0.121824, 0.000042], [291.34, 1.844379, 0.000040], [161.72, 24.198154, 0.000037],
+    [239.56, 25.513099, 0.000035], [331.55, 3.592518, 0.000023]];
+  let add = 0;
+  A.forEach(([a, b, amp], i) => { add += amp * sin(a + b * k - (i === 0 ? 0.009173 * T2 : 0)); });
+  return dateFromJd(jde + c + add - DELTA_T);
+}
+
+function phaseEvents(dt) {
+  const year = dt.getUTCFullYear() + dt.getUTCMonth() / 12;
+  const k0 = Math.floor((year - 2000) * 12.3685) - 2;
+  const ev = [];
+  for (let k = k0; k < k0 + 5; k++) for (const q of [0, 0.25, 0.5, 0.75]) ev.push({ q, t: phaseTime(k, q) });
+  return ev.sort((a, b) => a.t - b.t);
+}
+
+
+
+const PLACE = { lat: 41.0935, lon: 28.8020, tz: 'Europe/Istanbul' };
+const AY = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
+const GUN = ['Pzt','Sal','Çar','Per','Cum','Cmt','Paz'];
+const GUN_UZUN = ['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'];
+const dayKey = d => new Intl.DateTimeFormat('en-CA', { timeZone: PLACE.tz }).format(d);
+
+/* ---------- simgeler ---------- */
+const sun = '<circle cx="24" cy="24" r="8" fill="none" stroke="currentColor" stroke-width="2.4"/><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M24 5v5M24 38v5M5 24h5M38 24h5M10.6 10.6l3.5 3.5M33.9 33.9l3.5 3.5M10.6 37.4l3.5-3.5M33.9 14.1l3.5-3.5"/></g>';
+const cloudPath = 'M14 36h20a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0 1 13z';
+const cloud = `<path d="${cloudPath}" fill="var(--bg)" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>`;
+const ICONS = {
+  sun: sun,
+  moon: '<path d="M30 8a16 16 0 1 0 10 26A13 13 0 0 1 30 8z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>',
+  partly: '<g transform="translate(-6 -6) scale(.8)">' + sun + '</g>' + `<g transform="translate(4 6)">${cloud}</g>`,
+  cloud: `<g transform="translate(0 2)">${cloud}</g>`,
+  fog: `<g transform="translate(0 -4)">${cloud}</g><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M10 40h28M14 45h20"/></g>`,
+  drizzle: `<g transform="translate(0 -6)">${cloud}</g><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 37v2M26 37v2M34 37v2M22 43v2M30 43v2"/></g>`,
+  rain: `<g transform="translate(0 -6)">${cloud}</g><g stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 36l-2 6M26 36l-2 6M34 36l-2 6"/></g>`,
+  snow: `<g transform="translate(0 -6)">${cloud}</g><g fill="currentColor"><circle cx="17" cy="39" r="1.8"/><circle cx="25" cy="42" r="1.8"/><circle cx="33" cy="39" r="1.8"/><circle cx="21" cy="46" r="1.8"/><circle cx="29" cy="46" r="1.8"/></g>`,
+  storm: `<g transform="translate(0 -6)">${cloud}</g><path d="M26 33l-5 8h6l-4 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>`
+};
+const icon = k => `<svg viewBox="0 0 48 48" aria-hidden="true">${ICONS[k]}</svg>`;
+
+const WMO = c => {
+  if (c === 0) return ['Açık', 'sun'];
+  if (c === 1) return ['Çoğunlukla açık', 'partly'];
+  if (c === 2) return ['Parçalı bulutlu', 'partly'];
+  if (c === 3) return ['Kapalı', 'cloud'];
+  if (c === 45 || c === 48) return ['Sisli', 'fog'];
+  if (c >= 51 && c <= 57) return ['Çisenti', 'drizzle'];
+  if (c === 61) return ['Hafif yağmurlu', 'rain'];
+  if (c === 63) return ['Yağmurlu', 'rain'];
+  if (c === 65) return ['Kuvvetli yağmur', 'rain'];
+  if (c === 66 || c === 67) return ['Donan yağmur', 'rain'];
+  if (c === 71) return ['Hafif kar', 'snow'];
+  if (c === 73) return ['Karlı', 'snow'];
+  if (c === 75 || c === 77) return ['Yoğun kar', 'snow'];
+  if (c === 80) return ['Hafif sağanak', 'rain'];
+  if (c === 81) return ['Sağanak', 'rain'];
+  if (c === 82) return ['Kuvvetli sağanak', 'rain'];
+  if (c === 85 || c === 86) return ['Kar sağanağı', 'snow'];
+  if (c >= 95) return ['Gök gürültülü fırtına', 'storm'];
+  return ['', 'cloud'];
+};
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const r = x => Math.round(Number(x));
+
+async function loadWeather() {
+  const box = document.getElementById('wx');
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + PLACE.lat + '&longitude=' + PLACE.lon +
+    '&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day' +
+    '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset' +
+    '&timezone=Europe%2FIstanbul&forecast_days=4';
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    const cur = d.current, dl = d.daily;
+    let [desc, ic] = WMO(cur.weather_code);
+    if (!cur.is_day && (ic === 'sun' || ic === 'partly')) ic = ic === 'sun' ? 'moon' : 'cloud';
+    const hm = s => String(s).slice(11, 16);
+    const days = [1, 2, 3].map(i => {
+      const dt = new Date(dl.time[i] + 'T12:00:00');
+      const [dd, di] = WMO(dl.weather_code[i]);
+      const p = dl.precipitation_probability_max ? dl.precipitation_probability_max[i] : null;
+      return `<div class="day" title="${esc(dd)}"><b>${GUN_UZUN[dt.getDay()]}</b>${icon(di)}<span>${r(dl.temperature_2m_max[i])}° / ${r(dl.temperature_2m_min[i])}°</span>${p != null ? `<i>yağış %${r(p)}</i>` : ''}</div>`;
+    }).join('');
+    box.innerHTML = `<div class="now">${icon(ic)}<div><div class="temp">${r(cur.temperature_2m)}°</div></div><div><p class="desc">${esc(desc)}</p><p class="meta">En yüksek ${r(dl.temperature_2m_max[0])}°, en düşük ${r(dl.temperature_2m_min[0])}°</p></div></div>
+      <p class="meta">Hissedilen ${r(cur.apparent_temperature)}° · Nem %${r(cur.relative_humidity_2m)} · Rüzgar ${r(cur.wind_speed_10m)} km/sa</p>
+      <p class="meta">Gün doğumu ${hm(dl.sunrise[0])} · Gün batımı ${hm(dl.sunset[0])}</p>
+      <div class="days">${days}</div>`;
+  } catch (e) {
+    box.innerHTML = '<p class="err">Hava durumu şu an alınamadı. Birazdan kendiliğinden yeniden denenecek.</p>';
+  }
+}
+
+/* ---------- takvim ---------- */
+const PH = { 0: 'Yeni ay', 0.25: 'İlk dördün', 0.5: 'Dolunay', 0.75: 'Son dördün' };
+function moonGlyph(q) {
+  const c = 'var(--accent)';
+  if (q === 0.5) return `<svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4.2" fill="${c}"/></svg>`;
+  if (q === 0) return `<svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.8" fill="none" stroke="${c}" stroke-width="1"/></svg>`;
+  const right = q === 0.25;
+  return `<svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="3.8" fill="none" stroke="${c}" stroke-width="1"/><path d="M5 0.8 A4.2 4.2 0 0 ${right ? 1 : 0} 5 9.2 Z" fill="${c}"/></svg>`;
+}
+
+let view;
+function renderCal() {
+  const y = view.getFullYear(), m = view.getMonth();
+  document.getElementById('mtitle').textContent = AY[m] + ' ' + y;
+  const first = new Date(y, m, 1), lead = (first.getDay() + 6) % 7;
+  const daysIn = new Date(y, m + 1, 0).getDate();
+  const today = dayKey(new Date());
+  const ev = phaseEvents(new Date(Date.UTC(y, m, 15)));
+  const phaseByDay = {};
+  ev.forEach(e => { const k = dayKey(e.t); if (!(k in phaseByDay)) phaseByDay[k] = e; });
+  const pad = n => String(n).padStart(2, '0');
+  let html = GUN.map(g => `<div class="wd">${g}</div>`).join('');
+  const total = Math.ceil((lead + daysIn) / 7) * 7;
+  const inMonth = new Set();
+  for (let i = 0; i < total; i++) {
+    const d = new Date(y, m, i - lead + 1);
+    const k = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    const out = d.getMonth() !== m, we = (i % 7) >= 5;
+    const ph = !out ? phaseByDay[k] : null;
+    if (ph) inMonth.add(ph.q);
+    const tip = ph ? ` title="${PH[ph.q]}, ${new Intl.DateTimeFormat('tr-TR', { timeZone: PLACE.tz, hour: '2-digit', minute: '2-digit' }).format(ph.t)}"` : '';
+    html += `<div class="c${out ? ' out' : ''}${we && !out ? ' we' : ''}${k === today ? ' today' : ''}"${tip}><span>${d.getDate()}</span>${ph ? moonGlyph(ph.q) : ''}</div>`;
+  }
+  document.getElementById('cal').innerHTML = html;
+  document.getElementById('legend').innerHTML = [0.5, 0, 0.25, 0.75].filter(q => inMonth.has(q))
+    .map(q => `<span>${moonGlyph(q)}${PH[q]}</span>`).join('');
+}
+
+const now = new Date();
+view = new Date(now.getFullYear(), now.getMonth(), 1);
+document.getElementById('prev').addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth() - 1, 1); renderCal(); });
+document.getElementById('next').addEventListener('click', () => { view = new Date(view.getFullYear(), view.getMonth() + 1, 1); renderCal(); });
+renderCal();
+loadWeather();
+setInterval(loadWeather, 30 * 60000);
+setInterval(() => { const n = new Date(); if (n.getMonth() !== view.getMonth() && n.getDate() === 1) { view = new Date(n.getFullYear(), n.getMonth(), 1); } renderCal(); }, 60 * 60000);
+}
+</script>
+</body>
+</html>
